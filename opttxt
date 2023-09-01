@@ -1,0 +1,98 @@
+with open('total.txt', 'r', encoding="utf8") as fl:
+     total = fl.read().split('<a class="AnchorLink link clr-link pointer" tabindex="0">')[1: -1]
+total = pd.DataFrame({
+    'Name': [x.split('</a>')[0] for x in total],
+    'Team': [x.split('"playerinfo__playerteam">')[1].split('<')[0] for x in total],
+    'Pos': [x.split('playerpos ttu">')[1].split('<')[0] for x in total],
+    'Fpts': [x.split('table--cell fw-bold tc total tc sorted"><span>')[1].split('<')[0] for x in total]
+})
+total['Rank'] = total.index
+total
+
+
+
+total = pd.read_csv('tmp1.csv')
+total
+
+
+
+
+#ESPN format
+
+t1 = time.time()
+draft = 'now'
+tms = 12
+pno = 4
+name = 'Team Rubidge'
+
+with open('drafted2.txt', 'r') as fl:
+     drafted = fl.read().split('\n')
+if draft == 'now':
+    drafted = drafted[[x[:6] for x in drafted].index('R1, P1') - 1:]
+    drafted = pd.DataFrame({
+        'FTeam': [x.split(' - ')[-1] for x in drafted[1::3]],
+        'Name': [x.split(' / ')[0] for x in drafted[::3]], 
+        'Team': [x.split(' ')[-2] for x in drafted[::3]],
+        'Pos': [x.split(' ')[-1] for x in drafted[::3]]
+    })
+else:
+    drafted = pd.DataFrame(columns= ['FTeam', 'Name', 'Team', 'Pos'])
+
+df = total.merge(drafted, how= "outer", indicator= True)
+df = df[df['_merge']=='left_only'].reset_index(drop= True)
+
+taken = drafted[drafted['FTeam'] == name]['Pos'].to_list()
+
+trans = [(['QB'], 1, 0), (['RB'], 1, 1), (['RB'], 1, 2), (['WR'], 1, 3), (['WR'], 1, 4), (['TE'], 1, 5),
+         (['RB','WR', 'TE'], 1, 6), (['D/ST'], 1, 7), (['K'], 1, 8), (['QB'], .5, 9), (['RB'], .5, 10), (['WR'], .5, 11),
+        (['RB'], .25, 12), (['WR'], .25, 13), (['D/ST'], .75, 14)]
+
+if draft == 'pre':
+    pl = [pno + i * tms if i % 2 == 0 else tms - pno - 1 + i * tms for i in range(len(trans))][len(taken):]
+elif draft == 'now':
+    pl = [(i - len(taken)) * tms if i % 2 == 0 else tms - 1 - (2 * pno) + (i - len(taken)) * tms for i in range(len(trans))][len(taken):]
+    pl = [x - pl[0] for x in pl]
+    
+#Remove drafted slots
+for x in taken:
+    cont = True
+    for a, b, c in trans:
+        if cont and x in a:
+            cont = False
+            trans = [t for t in trans if t[2] != c]
+
+mat = np.repeat(df['Fpts'].astype(float).values.reshape(-1, 1), len(trans), axis= 1)
+
+for i, (pos, mult, dum) in enumerate(trans):
+    mat[:, i] *= mult * df['Pos'].isin(pos)
+    
+mat = np.repeat(mat[:, :, np.newaxis], len(trans), axis= 2)
+
+ex_avail = (np.ones(mat.shape).cumsum(axis = 0) - 1)
+
+picks = np.ones(mat.shape) * np.array(pl).reshape(1, 1, -1)
+
+mat *= picks <= ex_avail
+
+m = Model("knapsack")
+ply, pos, pk = (range(d) for d in mat.shape)
+
+x = [[[m.add_var(var_type=BINARY) for pk_ in pk] for pos_ in pos] for ply_ in ply]
+
+m.objective = maximize(xsum(x[ply_][pos_][pk_] * mat[ply_][pos_][pk_] for pk_ in pk for pos_ in pos for ply_ in ply))
+
+for pos_ in pos:
+    #One selection per position slot
+    m += xsum(x[ply_][pos_][pk_] for pk_ in pk for ply_ in ply) == 1
+    
+for pk_ in pk:
+    #One selection per selection
+    m += xsum(x[ply_][pos_][pk_] for pos_ in pos for ply_ in ply) == 1
+    
+for ply_ in ply:
+    #One selection per selection
+    m += xsum(x[ply_][pos_][pk_] for pk_ in pk for pos_ in pos) <= 1
+    
+m.optimize()
+print(time.time() - t1)
+df.loc[[ply_ for pk_ in pk for pos_ in pos for ply_ in ply if x[ply_][pos_][pk_].x >= 0.99]]
